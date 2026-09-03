@@ -2,6 +2,7 @@ package github
 
 import (
 	"archive/tar"
+	"archive/zip"
 	"bytes"
 	"compress/gzip"
 	"context"
@@ -161,6 +162,37 @@ func buildTarGz(t *testing.T, name string, content []byte) []byte {
 	return buf.Bytes()
 }
 
+func buildZip(t *testing.T, name string, content []byte) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	fw, err := zw.Create(name)
+	if err != nil {
+		t.Fatalf("zip create: %v", err)
+	}
+	if _, err := fw.Write(content); err != nil {
+		t.Fatalf("zip write: %v", err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatalf("zip close: %v", err)
+	}
+	return buf.Bytes()
+}
+
+// buildDefaultArchive builds the fake asset in whatever format defaultExt
+// says the current GOOS uses (zip on Windows, tar.gz elsewhere), so the
+// fixture matches what Source actually requests via {ext} — it must, since
+// several tests below rely on the default asset template with no
+// WithExtFunc/WithExtractFormat override.
+func buildDefaultArchive(t *testing.T, name string, content []byte) (archive []byte, ext string) {
+	t.Helper()
+	ext = defaultExt(runtime.GOOS)
+	if ext == "zip" {
+		return buildZip(t, name, content), ext
+	}
+	return buildTarGz(t, name, content), ext
+}
+
 // fakeRelease wires up an httptest server serving a single fake GitHub
 // release ("v1.2.3") for "owner/repo", with one platform archive asset
 // (containing a single binary named binName with content binContent) and,
@@ -179,8 +211,8 @@ func newFakeRelease(t *testing.T, binName string, binContent []byte, corruptChec
 
 func newFakeReleaseWithChecksumName(t *testing.T, binName string, binContent []byte, corruptChecksum, omitChecksums bool, checksumName string) *fakeRelease {
 	t.Helper()
-	archive := buildTarGz(t, binName, binContent)
-	assetName := fmt.Sprintf("myapp_v1.2.3_%s_%s.tar.gz", runtime.GOOS, runtime.GOARCH)
+	archive, ext := buildDefaultArchive(t, binName, binContent)
+	assetName := fmt.Sprintf("myapp_v1.2.3_%s_%s.%s", runtime.GOOS, runtime.GOARCH, ext)
 
 	sum := sha256.Sum256(archive)
 	hash := hex.EncodeToString(sum[:])
