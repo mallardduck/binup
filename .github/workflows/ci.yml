@@ -1,0 +1,91 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/rancher/ci-image/go1.26:latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Run tests
+        run: |
+          PKGS=$(go list ./... | grep -vE '/example$|/internal/mocksource$')
+          go test -v -race -coverprofile=coverage.out $PKGS
+
+      - name: Check coverage
+        run: |
+          go tool cover -func=coverage.out
+          COVERAGE=$(go tool cover -func=coverage.out | grep total | awk '{print $3}' | sed 's/%//')
+          echo "Total coverage: $COVERAGE%"
+          if (( $(echo "$COVERAGE < 90.0" | bc -l) )); then
+            echo "Coverage is below 90%"
+            exit 1
+          fi
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
+        with:
+          file: ./coverage.out
+          flags: unittests
+          name: codecov-umbrella
+          fail_ci_if_error: false
+
+
+  test-crossplatform:
+    name: Test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [macos-latest, windows-latest]
+        go: ['1.26']
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version: ${{ matrix.go }}
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Run tests
+        run: go test -v -race ./...
+
+  lint:
+    name: Lint
+    uses: ./.github/workflows/lint.yml
+
+  build:
+    name: Build
+    needs: [lint, test, test-crossplatform]
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/rancher/ci-image/go1.26:latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Build
+        run: go build -v ./...
+
+      - name: Verify no changes
+        run: |
+          git diff --exit-code
+          if [ $? -ne 0 ]; then
+            echo "Generated files are not up to date"
+            exit 1
+          fi

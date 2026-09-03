@@ -1,0 +1,50 @@
+name: Lint
+
+on:
+  pull_request:
+    branches: [ main ]
+  workflow_call:
+
+jobs:
+  golangci:
+    name: golangci-lint
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/rancher/ci-image/go1.26:latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: golangci-lint
+        run:
+          GOLANGCI_LINT_CACHE=$(mktemp -d) golangci-lint run --timeout=5m --verbose
+
+  formatting:
+    name: Code Formatting
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/rancher/ci-image/go1.26:latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Check formatting
+        run: |
+          if [ "$(gofmt -s -l . | wc -l)" -gt 0 ]; then
+            echo "The following files are not formatted:"
+            gofmt -s -l .
+            exit 1
+          fi
+
+      - name: Check go mod tidy
+        run: |
+          go mod tidy
+          if [ -f go.sum ]; then
+            git diff --exit-code go.mod go.sum
+          else
+            git diff --exit-code go.mod
+          fi
+          if [ $? -ne 0 ]; then
+            echo "go.mod or go.sum is not tidy"
+            exit 1
+          fi

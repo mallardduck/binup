@@ -1,0 +1,70 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+env:
+  CI: true
+
+jobs:
+  validate-and-release:
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/rancher/ci-image/go1.26:latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Run tests
+        run: go test -v -cover ./...
+
+      - name: Run race detector
+        run: go test -race ./...
+
+      - name: Run linter
+        run: GOLANGCI_LINT_CACHE=$(mktemp -d) golangci-lint run --timeout=5m
+
+      - name: Generate changelog
+        id: changelog
+        run: |
+          CURRENT_TAG="${{ github.ref_name }}"
+          PREV_TAG=$(git tag -l 'v*' --sort=-version:refname | grep -v "^${CURRENT_TAG}$" | head -n 1)
+          if [ -z "$PREV_TAG" ]; then
+            echo "No previous tag found, using full history"
+            PREV_TAG=$(git rev-list --max-parents=0 HEAD)
+          fi
+          echo "Generating changelog from ${PREV_TAG} to ${CURRENT_TAG}"
+          COMMITS=$(git log ${PREV_TAG}..${CURRENT_TAG} --oneline --no-merges)
+          if [ -z "$COMMITS" ]; then
+            CHANGELOG="No changes in this release."
+          else
+            CHANGELOG="## Changes\n\n${COMMITS}"
+          fi
+          echo -e "${CHANGELOG}" > changelog.md
+          echo "Changelog:"
+          cat changelog.md
+
+      - name: Create GitHub release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create ${{ github.ref_name }} \
+            --title "${{ github.ref_name }}" \
+            --notes-file changelog.md
+
+      - name: Verify Go module proxy
+        run: |
+          sleep 30
+          VERSION="${{ github.ref_name }}"
+          echo "Verifying module availability: github.com/${{ github.repository }}@${VERSION}"
+          GOPROXY=https://proxy.golang.org go list -m github.com/${{ github.repository }}@${VERSION} || \
+            echo "Warning: Module not yet available on proxy.golang.org (may take a few minutes)"
