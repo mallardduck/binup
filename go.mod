@@ -1,13 +1,11 @@
 module github.com/mallardduck/binup
 
-go 1.26.2
-
-toolchain go1.26.3
+go 1.25.0
 
 require (
-	github.com/mallardduck/ghreleases v0.6.0
+	github.com/Masterminds/semver/v3 v3.5.0
+	github.com/mallardduck/ghreleases v0.6.1
 	github.com/minio/selfupdate v0.6.0
-	golang.org/x/mod v0.17.0
 )
 
 require (

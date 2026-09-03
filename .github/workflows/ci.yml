@@ -10,8 +10,11 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        go: [1.25, 1.26]
     container:
-      image: ghcr.io/rancher/ci-image/go1.26:latest
+      image: ghcr.io/rancher/ci-image/go${{ matrix.go }}:latest
     steps:
       - name: Checkout code
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -35,6 +38,7 @@ jobs:
           fi
 
       - name: Upload coverage to Codecov
+        if: matrix.go == '1.25'
         uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
         with:
           file: ./coverage.out

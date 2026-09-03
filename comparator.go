@@ -3,7 +3,7 @@ package binup
 import (
 	"fmt"
 
-	"golang.org/x/mod/semver"
+	"github.com/Masterminds/semver/v3"
 )
 
 // Comparator decides whether a candidate version should replace the current one.
@@ -44,26 +44,14 @@ type SemVerComparator struct {
 
 // ShouldUpdate implements Comparator.
 func (c SemVerComparator) ShouldUpdate(current, candidate string) (bool, error) {
-	cur := canonical(current)
-	cand := canonical(candidate)
-
-	if !semver.IsValid(cand) {
-		return false, fmt.Errorf("binup: candidate version %q is not valid semver", candidate)
+	cand, err := semver.NewVersion(candidate)
+	if err != nil {
+		return false, fmt.Errorf("binup: candidate version %q is not valid semver: %w", candidate, err)
 	}
-	if !semver.IsValid(cur) {
+	cur, err := semver.NewVersion(current)
+	if err != nil {
 		// Current isn't semver — almost certainly a dev/dirty build.
 		return c.DevBuildOffersUpdate, nil
 	}
-	return semver.Compare(cand, cur) > 0, nil
-}
-
-// canonical ensures a leading "v" so golang.org/x/mod/semver accepts it.
-func canonical(v string) string {
-	if v == "" {
-		return v
-	}
-	if v[0] != 'v' {
-		return "v" + v
-	}
-	return v
+	return cand.GreaterThan(cur), nil
 }
