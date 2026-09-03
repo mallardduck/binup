@@ -1,0 +1,82 @@
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  # Start from the standard set (errcheck, govet, staticcheck, etc.) and add more.
+  default: standard
+  enable:
+    # --- Idiomatic Best Practices ---
+    - revive           # Flexible drop-in replacement for golint (naming, style)
+    - staticcheck      # Performs advanced static analysis for bugs and performance
+    - govet            # Reports suspicious constructs (printf formatting, shadows)
+    - errcheck         # Ensures all returned errors are explicitly checked/handled
+    - bodyclose        # Checks whether HTTP response bodies are successfully closed
+
+    # --- Strict Code Quality & Safety ---
+    - errorlint        # Enforces correct usage of errors.Is and errors.As wrapping
+    - gosec            # Inspects source code for security problems
+    - prealloc         # Catches slice declarations that could optimize by preallocating
+    - unparam          # Detects unused function parameters
+    - unused           # Checks for unused constants, variables, functions, and types
+    - makezero         # Finds slices initialized with non-zero length but appended to
+
+  settings:
+    errcheck:
+      exclude-functions:
+        # Closing HTTP response bodies and network connections in a defer is
+        # idiomatic Go; the error is unactionable at that point.
+        - (io.ReadCloser).Close
+        - (net.Conn).Close
+
+    revive:
+      rules:
+        - name: error-return
+        - name: var-naming
+        - name: package-comments
+        - name: argument-limit
+          arguments: [5]
+
+    govet:
+      enable-all: true
+
+  exclusions:
+    # Don't apply security or strict error-checking linters to test files.
+    rules:
+      - path: _test\.go
+        linters:
+          - gosec
+          - errcheck
+          - gocritic
+          - revive
+          - govet
+      - path: example
+        linters:
+          - gosec
+          - errcheck
+          - gocritic
+          - revive
+          - govet
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+    - gci
+
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/mallardduck
+    gci:
+      sections:
+        - standard
+        - default
+        - prefix(github.com/mallardduck)
+    gofmt:
+      simplify: true
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
