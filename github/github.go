@@ -74,6 +74,11 @@ type Source struct {
 	extractFormat   ArchiveFormat
 	templateMode    TemplateMode
 	allowNoChecksum bool
+
+	manifestVerifier    SignatureVerifier
+	manifestVerifierSet bool
+	artifactVerifier    SignatureVerifier
+	artifactVerifierSet bool
 }
 
 // Option configures the github Source.
@@ -166,6 +171,30 @@ func WithoutChecksumVerification() Option {
 // release" behavior.
 func WithTagPrefix(prefix string) Option {
 	return func(s *Source) { s.tagPrefix = prefix }
+}
+
+// WithManifestVerifier authenticates the checksum manifest against a detached
+// signature before any hash in it is trusted, so a compromised release or
+// maintainer token can no longer swap both the binary and its checksums. The
+// release must carry the signature asset named by v.SignatureName; a missing
+// or invalid signature fails Fetch (ErrSignatureMissing / ErrSignatureInvalid)
+// and never falls back to the unsigned checksums. A nil verifier is an error
+// (ErrInvalidVerifier), never a silent downgrade. Off by default.
+//
+// STUB: accepted but not yet enforced.
+func WithManifestVerifier(v SignatureVerifier) Option {
+	return func(s *Source) { s.manifestVerifier, s.manifestVerifierSet = v, true }
+}
+
+// WithArtifactVerifier authenticates the downloaded release asset itself
+// against a detached signature, for projects that sign their archives rather
+// than (or as well as) a checksum manifest. Independent of
+// WithManifestVerifier: use either or both. A nil verifier is an error
+// (ErrInvalidVerifier). Off by default.
+//
+// STUB: accepted but not yet enforced.
+func WithArtifactVerifier(v SignatureVerifier) Option {
+	return func(s *Source) { s.artifactVerifier, s.artifactVerifierSet = v, true }
 }
 
 // New builds a github-backed Source for "owner/repo". Parsing errors surface
