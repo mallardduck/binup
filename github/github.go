@@ -212,11 +212,7 @@ func New(repo string, opts ...Option) *Source {
 		s.appName = s.repoName
 	}
 	if s.client == nil {
-		if s.httpClient != nil {
-			s.client = ghrelease.NewClientWithHTTP(s.httpClient, s.token)
-		} else {
-			s.client = ghrelease.NewClient(s.token)
-		}
+		s.client = s.newClient()
 	}
 	if s.assetTemplate == "" {
 		s.assetTemplate = defaultAssetTemplate
@@ -237,6 +233,17 @@ func New(repo string, opts ...Option) *Source {
 		}
 	}
 	return s
+}
+
+// newClient builds the ghreleases client from the Source's options. It is the
+// single place verifiers are wired into the client, so tests that need a
+// redirected transport go through it rather than constructing their own.
+func (s *Source) newClient() *ghrelease.Client {
+	var copts []ghrelease.Option
+	if s.httpClient != nil {
+		return ghrelease.NewClientWithHTTP(s.httpClient, s.token, copts...)
+	}
+	return ghrelease.NewClient(s.token, copts...)
 }
 
 func defaultExt(goos string) string {
