@@ -4,7 +4,7 @@ go 1.25.0
 
 require (
 	github.com/Masterminds/semver/v3 v3.5.0
-	github.com/mallardduck/ghreleases v0.6.1
+	github.com/mallardduck/ghreleases v0.8.0
 	github.com/minio/selfupdate v0.6.0
 )
 
