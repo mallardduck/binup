@@ -1,6 +1,9 @@
 package binup
 
-import "testing"
+import (
+	"errors"
+	"testing"
+)
 
 func TestSemVerComparator(t *testing.T) {
 	cases := []struct {
@@ -38,5 +41,24 @@ func TestSemVerComparator(t *testing.T) {
 				t.Fatalf("ShouldUpdate(%q,%q)=%v, want %v", tc.current, tc.candidate, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestComparatorFunc(t *testing.T) {
+	wantErr := errors.New("boom")
+	var gotCurrent, gotCandidate string
+	f := ComparatorFunc(func(current, candidate string) (bool, error) {
+		gotCurrent, gotCandidate = current, candidate
+		return true, wantErr
+	})
+
+	// Used through the interface, as Updater does.
+	var c Comparator = f
+	ok, err := c.ShouldUpdate("v1", "v2")
+	if !ok || !errors.Is(err, wantErr) {
+		t.Fatalf("ShouldUpdate = (%v, %v), want (true, %v)", ok, err, wantErr)
+	}
+	if gotCurrent != "v1" || gotCandidate != "v2" {
+		t.Fatalf("func saw (%q, %q), want (v1, v2) in that order", gotCurrent, gotCandidate)
 	}
 }
