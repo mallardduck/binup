@@ -37,6 +37,9 @@ type Source interface {
 // to present it to the user. Sources may carry richer data of their own, but
 // this is all the core relies on.
 type Release struct {
+	// PublishedAt is when the Source published the release. Zero if unknown.
+	PublishedAt time.Time
+
 	// Version is the release's version string, as the Source reports it (e.g.
 	// "v1.4.2"). It is handed to the Comparator as-is; the comparator owns any
 	// normalization.
@@ -50,7 +53,4 @@ type Release struct {
 	// pre-release (e.g. GitHub's prerelease flag). It lets a CLI warn before
 	// moving onto an unstable build without guessing from the version string.
 	Prerelease bool
-
-	// PublishedAt is when the Source published the release. Zero if unknown.
-	PublishedAt time.Time
 }
