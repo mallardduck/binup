@@ -96,3 +96,27 @@ func TestNew_NilSource(t *testing.T) {
 		t.Fatal("expected an error for a nil Source")
 	}
 }
+
+func TestWithComparator(t *testing.T) {
+	ctx := context.Background()
+	src := &mocksource.Source{Release: &binup.Release{Version: "v1.0.0"}}
+
+	// Same version as current: the default SemVerComparator would refuse. A
+	// custom policy must replace it entirely, not be consulted alongside it.
+	u, err := binup.New(src,
+		binup.WithVersionProvider(binup.StaticVersion("v1.0.0")),
+		binup.WithComparator(binup.ComparatorFunc(func(current, candidate string) (bool, error) {
+			return current == candidate, nil
+		})),
+	)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	res, err := u.Check(ctx)
+	if err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+	if !res.UpdateAvailable {
+		t.Fatal("custom comparator was not used: UpdateAvailable=false")
+	}
+}

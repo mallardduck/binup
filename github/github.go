@@ -16,6 +16,10 @@
 // verified before extraction — see the Source security contract in
 // ../source.go. Use WithoutChecksumVerification only if you accept that risk.
 //
+// Checksums prove integrity, not authenticity. WithManifestVerifier and
+// WithArtifactVerifier additionally authenticate the checksum manifest and/or
+// the release asset against detached signatures (e.g. keyless Sigstore).
+//
 // Every non-trivial ghreleases knob is exposed via an Option rather than
 // hardcoded — asset/checksum naming, template strictness, HTTP client,
 // monorepo tag-prefix filtering, archive format — because different release
@@ -58,22 +62,27 @@ const defaultTemplateMode = TemplatePermissive
 // Source implements binup.Source against a single "owner/repo" (or GitHub URL
 // — see ghrelease.ParseSource) backed by GitHub Releases.
 type Source struct {
-	parseErr        error
-	client          *ghrelease.Client
-	httpClient      *http.Client
-	extFunc         func(goos string) string
-	binaryName      func(goos string) string
-	appName         string
-	owner           string
-	repoName        string
-	repo            string
-	assetTemplate   string
-	checksumAsset   string
-	token           string
-	tagPrefix       string
-	extractFormat   ArchiveFormat
-	templateMode    TemplateMode
-	allowNoChecksum bool
+	parseErr         error
+	manifestVerifier SignatureVerifier
+	artifactVerifier SignatureVerifier
+	client           *ghrelease.Client
+	httpClient       *http.Client
+	extFunc          func(goos string) string
+	binaryName       func(goos string) string
+	appName          string
+	owner            string
+	repoName         string
+	repo             string
+	assetTemplate    string
+	checksumAsset    string
+	token            string
+	tagPrefix        string
+	extractFormat    ArchiveFormat
+	templateMode     TemplateMode
+
+	allowNoChecksum     bool
+	manifestVerifierSet bool
+	artifactVerifierSet bool
 }
 
 // Option configures the github Source.
@@ -168,6 +177,30 @@ func WithTagPrefix(prefix string) Option {
 	return func(s *Source) { s.tagPrefix = prefix }
 }
 
+// WithManifestVerifier authenticates the checksum manifest against a detached
+// signature before any hash in it is trusted, so a compromised release or
+// maintainer token can no longer swap both the binary and its checksums. The
+// release must carry the signature asset named by v.SignatureName; a missing
+// or invalid signature fails Fetch (ErrSignatureMissing / ErrSignatureInvalid)
+// and never falls back to the unsigned checksums. A nil verifier is an error
+// (ErrInvalidVerifier), never a silent downgrade. Off by default.
+//
+// A verified manifest is mandatory: WithoutChecksumVerification does not
+// relax it, so a release with no checksum manifest, or no entry for the asset,
+// fails rather than being fetched unverified.
+func WithManifestVerifier(v SignatureVerifier) Option {
+	return func(s *Source) { s.manifestVerifier, s.manifestVerifierSet = v, true }
+}
+
+// WithArtifactVerifier authenticates the downloaded release asset itself
+// against a detached signature, for projects that sign their archives rather
+// than (or as well as) a checksum manifest. Independent of
+// WithManifestVerifier: use either or both. A nil verifier is an error
+// (ErrInvalidVerifier). Off by default.
+func WithArtifactVerifier(v SignatureVerifier) Option {
+	return func(s *Source) { s.artifactVerifier, s.artifactVerifierSet = v, true }
+}
+
 // New builds a github-backed Source for "owner/repo". Parsing errors surface
 // from the first call to Latest or Fetch, not from New, so it's safe to call
 // at package-init time with a literal.
@@ -183,11 +216,7 @@ func New(repo string, opts ...Option) *Source {
 		s.appName = s.repoName
 	}
 	if s.client == nil {
-		if s.httpClient != nil {
-			s.client = ghrelease.NewClientWithHTTP(s.httpClient, s.token)
-		} else {
-			s.client = ghrelease.NewClient(s.token)
-		}
+		s.client = s.newClient()
 	}
 	if s.assetTemplate == "" {
 		s.assetTemplate = defaultAssetTemplate
@@ -208,6 +237,26 @@ func New(repo string, opts ...Option) *Source {
 		}
 	}
 	return s
+}
+
+// newClient builds the ghreleases client from the Source's options. It is the
+// single place verifiers are wired into the client, so tests that need a
+// redirected transport go through it rather than constructing their own.
+func (s *Source) newClient() *ghrelease.Client {
+	var copts []ghrelease.Option
+	// Wire on "was set", not "is non-nil": a nil verifier must reach the
+	// client, which fails closed with ErrInvalidVerifier rather than
+	// silently dropping to unverified.
+	if s.manifestVerifierSet {
+		copts = append(copts, ghrelease.WithManifestVerifier(s.manifestVerifier))
+	}
+	if s.artifactVerifierSet {
+		copts = append(copts, ghrelease.WithArtifactVerifier(s.artifactVerifier))
+	}
+	if s.httpClient != nil {
+		return ghrelease.NewClientWithHTTP(s.httpClient, s.token, copts...)
+	}
+	return ghrelease.NewClient(s.token, copts...)
 }
 
 func defaultExt(goos string) string {
@@ -281,10 +330,16 @@ func (s *Source) Fetch(ctx context.Context, rel *binup.Release) (io.ReadCloser, 
 		return nil, err
 	}
 
-	data, _, err := s.client.DownloadToBytes(assetURL, ghrelease.DownloadOptions{
-		ExpectedHash: expectedHash,
-		Context:      ctx,
-	})
+	dlOpts := ghrelease.DownloadOptions{ExpectedHash: expectedHash, Context: ctx}
+	if s.artifactVerifier != nil {
+		var sigURL string
+		if sigURL, err = signatureURL(ghRel, s.artifactVerifier, assetName); err != nil {
+			return nil, err
+		}
+		dlOpts.SignatureURL = sigURL
+	}
+
+	data, _, err := s.client.DownloadToBytes(assetURL, dlOpts)
 	if err != nil {
 		return nil, fmt.Errorf("binup/github: download %s: %w", assetName, err)
 	}
@@ -310,9 +365,12 @@ func (s *Source) expectedHash(ctx context.Context, rel *ghrelease.Release, asset
 		return "", fmt.Errorf("binup/github: render checksum asset name: %w", err)
 	}
 
+	// WithoutChecksumVerification never relaxes a manifest verifier.
+	lenient := s.allowNoChecksum && !s.manifestVerifierSet
+
 	checksumURL, err := findAssetURL(rel.Assets, checksumAssetName)
 	if err != nil {
-		if s.allowNoChecksum {
+		if lenient {
 			return "", nil
 		}
 		return "", fmt.Errorf(
@@ -322,6 +380,14 @@ func (s *Source) expectedHash(ctx context.Context, rel *ghrelease.Release, asset
 		)
 	}
 
+	if s.manifestVerifier != nil {
+		var sigURL string
+		if sigURL, err = signatureURL(rel, s.manifestVerifier, checksumAssetName); err != nil {
+			return "", err
+		}
+		ctx = ghrelease.WithSignatureURL(ctx, sigURL)
+	}
+
 	checksums, err := s.client.FetchChecksums(ctx, checksumURL)
 	if err != nil {
 		return "", fmt.Errorf("binup/github: fetch checksum manifest %s: %w", checksumAssetName, err)
@@ -329,12 +395,27 @@ func (s *Source) expectedHash(ctx context.Context, rel *ghrelease.Release, asset
 
 	hash, ok := checksums[assetName]
 	if !ok {
-		if s.allowNoChecksum {
+		if lenient {
 			return "", nil
 		}
 		return "", fmt.Errorf("binup/github: checksum manifest %s has no entry for %q", checksumAssetName, assetName)
 	}
 	return hash, nil
+}
+
+// signatureURL finds the detached-signature asset for assetName in the
+// release. GitHub API asset URLs are opaque (they end in a numeric ID), so
+// ghreleases cannot derive the signature's URL from the asset's; it has to
+// come from the release's asset list. A release without it wraps
+// ErrSignatureMissing so enabling a verifier can never degrade to unverified.
+func signatureURL(rel *ghrelease.Release, v SignatureVerifier, assetName string) (string, error) {
+	sigName := v.SignatureName(assetName)
+	url, err := findAssetURL(rel.Assets, sigName)
+	if err != nil {
+		return "", fmt.Errorf("binup/github: release %s has no signature asset %q for %s: %w",
+			rel.TagName, sigName, assetName, ErrSignatureMissing)
+	}
+	return url, nil
 }
 
 func findAssetURL(assets []ghrelease.Asset, name string) (string, error) {

@@ -38,3 +38,21 @@ const (
 	FormatGzip  ArchiveFormat = ghrelease.FormatGzip
 	FormatPlain ArchiveFormat = ghrelease.FormatPlain
 )
+
+// SignatureVerifier authenticates content against a detached signature (see
+// WithManifestVerifier and WithArtifactVerifier). Ready-made implementations
+// live in the separate github.com/mallardduck/ghreleases/sigstore and /pgp
+// modules; implementing the two methods yourself needs no ghreleases import.
+type SignatureVerifier = ghrelease.SignatureVerifier
+
+// Sentinel errors returned (wrapped) by Fetch when signature verification
+// fails, for use with errors.Is.
+var (
+	// ErrSignatureMissing: a verifier is configured but the release has no
+	// matching signature asset.
+	ErrSignatureMissing = ghrelease.ErrSignatureMissing
+	// ErrSignatureInvalid: the verifier rejected the signature.
+	ErrSignatureInvalid = ghrelease.ErrSignatureInvalid
+	// ErrInvalidVerifier: a nil verifier was supplied.
+	ErrInvalidVerifier = ghrelease.ErrInvalidVerifier
+)

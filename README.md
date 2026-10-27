@@ -96,6 +96,8 @@ every part of that is a `github.Option` because real release pipelines vary:
 | `WithExtractFormat` | forces the archive format instead of relying on filename-suffix auto-detection |
 | `WithTagPrefix` | restricts release lookup to a tag prefix, for repos publishing multiple release lines (e.g. `cli/v1.2.3`) |
 | `WithToken` / `WithHTTPClient` | GitHub API token / a custom `*http.Client` for proxies, timeouts, custom transports |
+| `WithManifestVerifier` | authenticate the checksum manifest against a detached signature before any hash in it is trusted; see [Signature verification](#signature-verification) |
+| `WithArtifactVerifier` | authenticate the downloaded release asset itself against a detached signature; see [Signature verification](#signature-verification) |
 | `WithoutChecksumVerification` | **dangerous** — skips the checksum-manifest requirement; see its doc comment |
 
 `WithTemplateMode` and `WithExtractFormat` take config-value types
@@ -137,6 +139,42 @@ Point `github.New("owner/repo", ...)` at your repo. If your release assets
 don't follow `{name}_{version}_{os}_{arch}.{ext}` with a `checksums.txt`
 manifest, use the `github.With*` options to match your layout (see
 "Configuring the github Source" above).
+
+## Signature verification
+
+A checksum file proves a download is intact, not that it is authentic: anyone
+who can replace the release can replace the binary *and* `checksums.txt`.
+Signature verification closes that gap, and is **off by default**:
+
+```go
+v, err := sigstore.NewVerifier(sigstore.Identity{ /* pin your release workflow's identity */ })
+if err != nil { /* ... */ }
+
+src := github.New("owner/repo",
+    github.WithManifestVerifier(v), // checksums.txt is signed (e.g. goreleaser)
+    github.WithArtifactVerifier(v), // and/or each archive is signed
+)
+```
+
+- Use either option or both; they are independent.
+- It **fails closed**. A release without the signature asset fails `Fetch` with
+  `github.ErrSignatureMissing`, a rejected signature with
+  `github.ErrSignatureInvalid`, and a nil verifier with
+  `github.ErrInvalidVerifier`. Nothing falls back to the unsigned path.
+- `WithManifestVerifier` makes the manifest mandatory: `WithoutChecksumVerification`
+  does not relax it.
+- The signature asset is located by `v.SignatureName(assetName)`.
+- `github.SignatureVerifier` is a two-method interface, so you can implement it
+  without importing `ghreleases`. Ready-made verifiers are separate modules, so
+  you only pay for the one you import:
+
+| Module | Verifies | Cost |
+|---|---|---|
+| `github.com/mallardduck/ghreleases/pgp` | detached OpenPGP `.asc` signatures (e.g. Helm) | small (`ProtonMail/go-crypto`) |
+| `github.com/mallardduck/ghreleases/sigstore` | keyless Sigstore `.sigstore.json` bundles (goreleaser, syft, flux) | large (`sigstore-go`, ~24 MB binary) |
+
+Both of those modules declare `go 1.25.8`, so importing one raises your
+minimum Go toolchain above binup's own.
 
 ## Verification note
 
