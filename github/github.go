@@ -62,26 +62,26 @@ const defaultTemplateMode = TemplatePermissive
 // Source implements binup.Source against a single "owner/repo" (or GitHub URL
 // — see ghrelease.ParseSource) backed by GitHub Releases.
 type Source struct {
-	parseErr        error
-	client          *ghrelease.Client
-	httpClient      *http.Client
-	extFunc         func(goos string) string
-	binaryName      func(goos string) string
-	appName         string
-	owner           string
-	repoName        string
-	repo            string
-	assetTemplate   string
-	checksumAsset   string
-	token           string
-	tagPrefix       string
-	extractFormat   ArchiveFormat
-	templateMode    TemplateMode
-	allowNoChecksum bool
+	parseErr         error
+	manifestVerifier SignatureVerifier
+	artifactVerifier SignatureVerifier
+	client           *ghrelease.Client
+	httpClient       *http.Client
+	extFunc          func(goos string) string
+	binaryName       func(goos string) string
+	appName          string
+	owner            string
+	repoName         string
+	repo             string
+	assetTemplate    string
+	checksumAsset    string
+	token            string
+	tagPrefix        string
+	extractFormat    ArchiveFormat
+	templateMode     TemplateMode
 
-	manifestVerifier    SignatureVerifier
+	allowNoChecksum     bool
 	manifestVerifierSet bool
-	artifactVerifier    SignatureVerifier
 	artifactVerifierSet bool
 }
 
@@ -332,8 +332,8 @@ func (s *Source) Fetch(ctx context.Context, rel *binup.Release) (io.ReadCloser, 
 
 	dlOpts := ghrelease.DownloadOptions{ExpectedHash: expectedHash, Context: ctx}
 	if s.artifactVerifier != nil {
-		sigURL, err := signatureURL(ghRel, s.artifactVerifier, assetName)
-		if err != nil {
+		var sigURL string
+		if sigURL, err = signatureURL(ghRel, s.artifactVerifier, assetName); err != nil {
 			return nil, err
 		}
 		dlOpts.SignatureURL = sigURL
@@ -381,8 +381,8 @@ func (s *Source) expectedHash(ctx context.Context, rel *ghrelease.Release, asset
 	}
 
 	if s.manifestVerifier != nil {
-		sigURL, err := signatureURL(rel, s.manifestVerifier, checksumAssetName)
-		if err != nil {
+		var sigURL string
+		if sigURL, err = signatureURL(rel, s.manifestVerifier, checksumAssetName); err != nil {
 			return "", err
 		}
 		ctx = ghrelease.WithSignatureURL(ctx, sigURL)

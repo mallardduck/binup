@@ -856,7 +856,7 @@ func assertFetchErr(t *testing.T, rc io.ReadCloser, err, want error) {
 	case err == nil:
 		rc.Close()
 		t.Fatalf("Fetch succeeded, want error %v", want)
-	case want != errAny && !errors.Is(err, want):
+	case !errors.Is(want, errAny) && !errors.Is(err, want):
 		t.Fatalf("Fetch error = %v, want errors.Is %v", err, want)
 	}
 }
