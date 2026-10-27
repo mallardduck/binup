@@ -81,6 +81,7 @@ type Source struct {
 	templateMode     TemplateMode
 
 	allowNoChecksum     bool
+	prereleases         bool
 	manifestVerifierSet bool
 	artifactVerifierSet bool
 }
@@ -175,6 +176,15 @@ func WithoutChecksumVerification() Option {
 // release" behavior.
 func WithTagPrefix(prefix string) Option {
 	return func(s *Source) { s.tagPrefix = prefix }
+}
+
+// WithPrereleases makes Latest consider pre-releases (e.g. v1.2.0-rc1) and
+// return the highest semver release, rather than GitHub's "latest" (which is
+// always stable). Drafts are still ignored and non-semver tags are skipped.
+// Pre-release assets go through the same checksum and signature verification
+// as stable ones. Off by default.
+func WithPrereleases() Option {
+	return func(s *Source) { s.prereleases = true }
 }
 
 // WithManifestVerifier authenticates the checksum manifest against a detached
@@ -278,6 +288,10 @@ func (s *Source) Latest(ctx context.Context) (*binup.Release, error) {
 
 	if s.tagPrefix != "" {
 		ctx = ghrelease.WithTagPrefix(ctx, s.tagPrefix)
+	}
+
+	if s.prereleases {
+		ctx = ghrelease.WithPrereleases(ctx, true)
 	}
 
 	tag, err := s.client.LatestRelease(ctx, s.owner, s.repoName)

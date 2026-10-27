@@ -1017,3 +1017,46 @@ func TestSource_Verifiers_WithOpaqueAssetURLs(t *testing.T) {
 		t.Fatalf("verifier calls manifest=%d artifact=%d, want 1 and 1", mv.calls, av.calls)
 	}
 }
+
+// A pre-release is only offered when WithPrereleases is set; by default Latest
+// sticks to the newest stable release.
+func TestSource_WithPrereleases(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/owner/repo/releases/latest", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]string{"tag_name": "v1.0.0"})
+	})
+	mux.HandleFunc("/repos/owner/repo/releases", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("page") != "1" {
+			_ = json.NewEncoder(w).Encode([]map[string]any{})
+			return
+		}
+		_ = json.NewEncoder(w).Encode([]map[string]any{
+			{"id": 1, "tag_name": "v1.1.0-rc1", "prerelease": true, "published_at": "2024-02-01T00:00:00Z", "assets": []any{}},
+			{"id": 2, "tag_name": "v1.0.0", "published_at": "2024-01-01T00:00:00Z", "assets": []any{}},
+			{"id": 3, "tag_name": "v2.0.0", "draft": true, "published_at": "2024-03-01T00:00:00Z", "assets": []any{}},
+		})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	for _, tc := range []struct {
+		name string
+		opts []Option
+		want string
+	}{
+		{"default is stable only", nil, "v1.0.0"},
+		{"opt in picks highest, skips drafts", []Option{WithPrereleases()}, "v1.1.0-rc1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := New("owner/repo", tc.opts...)
+			s.client = ghrelease.NewClientWithHTTP(&http.Client{Transport: redirectGitHubAPI(server.URL)}, "test-token")
+			rel, err := s.Latest(context.Background())
+			if err != nil {
+				t.Fatalf("Latest: %v", err)
+			}
+			if rel.Version != tc.want {
+				t.Fatalf("Version = %q, want %q", rel.Version, tc.want)
+			}
+		})
+	}
+}
