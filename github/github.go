@@ -16,6 +16,10 @@
 // verified before extraction — see the Source security contract in
 // ../source.go. Use WithoutChecksumVerification only if you accept that risk.
 //
+// Checksums prove integrity, not authenticity. WithManifestVerifier and
+// WithArtifactVerifier additionally authenticate the checksum manifest and/or
+// the release asset against detached signatures (e.g. keyless Sigstore).
+//
 // Every non-trivial ghreleases knob is exposed via an Option rather than
 // hardcoded — asset/checksum naming, template strictness, HTTP client,
 // monorepo tag-prefix filtering, archive format — because different release
