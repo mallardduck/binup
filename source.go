@@ -3,6 +3,7 @@ package binup
 import (
 	"context"
 	"io"
+	"time"
 )
 
 // Source is the pluggable backend that tells binup where updates come from and
@@ -44,4 +45,12 @@ type Release struct {
 	// Notes is optional human-readable release notes / changelog, for the CLI
 	// to display. May be empty.
 	Notes string
+
+	// Prerelease reports whether the Source marks this release as a
+	// pre-release (e.g. GitHub's prerelease flag). It lets a CLI warn before
+	// moving onto an unstable build without guessing from the version string.
+	Prerelease bool
+
+	// PublishedAt is when the Source published the release. Zero if unknown.
+	PublishedAt time.Time
 }
