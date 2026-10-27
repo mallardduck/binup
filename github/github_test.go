@@ -19,6 +19,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/mallardduck/binup"
 	ghrelease "github.com/mallardduck/ghreleases"
@@ -1056,6 +1057,63 @@ func TestSource_WithPrereleases(t *testing.T) {
 			}
 			if rel.Version != tc.want {
 				t.Fatalf("Version = %q, want %q", rel.Version, tc.want)
+			}
+		})
+	}
+}
+
+// Latest carries the source's richer release metadata, so a CLI can warn about
+// pre-releases and show notes without a second request or guessing from the tag.
+func TestSource_Latest_PopulatesReleaseMetadata(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/owner/repo/releases/latest", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id": 2, "tag_name": "v1.0.0", "body": "stable notes", "prerelease": false,
+			"published_at": "2024-01-01T00:00:00Z", "assets": []any{},
+		})
+	})
+	mux.HandleFunc("/repos/owner/repo/releases", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("page") != "1" {
+			_ = json.NewEncoder(w).Encode([]map[string]any{})
+			return
+		}
+		_ = json.NewEncoder(w).Encode([]map[string]any{
+			{"id": 1, "tag_name": "v1.1.0-rc1", "body": "rc notes", "prerelease": true, "published_at": "2024-02-01T00:00:00Z", "assets": []any{}},
+			{"id": 2, "tag_name": "v1.0.0", "body": "stable notes", "published_at": "2024-01-01T00:00:00Z", "assets": []any{}},
+		})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	for _, tc := range []struct {
+		name           string
+		opts           []Option
+		wantVersion    string
+		wantNotes      string
+		wantPrerelease bool
+		wantPublished  time.Time
+	}{
+		{"stable", nil, "v1.0.0", "stable notes", false, time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)},
+		{"pre-release opt in", []Option{WithPrereleases()}, "v1.1.0-rc1", "rc notes", true, time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := New("owner/repo", tc.opts...)
+			s.client = ghrelease.NewClientWithHTTP(&http.Client{Transport: redirectGitHubAPI(server.URL)}, "test-token")
+			rel, err := s.Latest(context.Background())
+			if err != nil {
+				t.Fatalf("Latest: %v", err)
+			}
+			if rel.Version != tc.wantVersion {
+				t.Errorf("Version = %q, want %q", rel.Version, tc.wantVersion)
+			}
+			if rel.Notes != tc.wantNotes {
+				t.Errorf("Notes = %q, want %q", rel.Notes, tc.wantNotes)
+			}
+			if rel.Prerelease != tc.wantPrerelease {
+				t.Errorf("Prerelease = %v, want %v", rel.Prerelease, tc.wantPrerelease)
+			}
+			if !rel.PublishedAt.Equal(tc.wantPublished) {
+				t.Errorf("PublishedAt = %v, want %v", rel.PublishedAt, tc.wantPublished)
 			}
 		})
 	}
