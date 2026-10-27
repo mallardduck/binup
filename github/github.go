@@ -277,10 +277,8 @@ func defaultExt(goos string) string {
 }
 
 // Latest returns the newest release's metadata without downloading the binary.
-//
-// Notes is currently always empty: ghreleases v0.6.0's Release type does not
-// expose the release body/changelog text. Populate it here once that lands
-// upstream.
+// Notes, Prerelease and PublishedAt come from the same single request that
+// resolves the version.
 func (s *Source) Latest(ctx context.Context) (*binup.Release, error) {
 	if s.parseErr != nil {
 		return nil, fmt.Errorf("binup/github: %w", s.parseErr)
@@ -294,12 +292,17 @@ func (s *Source) Latest(ctx context.Context) (*binup.Release, error) {
 		ctx = ghrelease.WithPrereleases(ctx, true)
 	}
 
-	tag, err := s.client.LatestRelease(ctx, s.owner, s.repoName)
+	rel, err := s.client.LatestReleaseInfo(ctx, s.owner, s.repoName)
 	if err != nil {
 		return nil, fmt.Errorf("binup/github: latest release for %s: %w", s.repo, err)
 	}
 
-	return &binup.Release{Version: tag}, nil
+	return &binup.Release{
+		Version:     rel.TagName,
+		Notes:       rel.Body,
+		Prerelease:  rel.Prerelease,
+		PublishedAt: rel.PublishedAt,
+	}, nil
 }
 
 // Fetch downloads, verifies (checksum, via ghreleases), and extracts the
