@@ -17,6 +17,7 @@ import (
 	"net/url"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/mallardduck/binup"
@@ -208,6 +209,39 @@ type fakeRelease struct {
 	// by asset name; set before the first request. Served and listed
 	// alongside the archive and checksums.
 	extra map[string][]byte
+	// opaqueIDs serves every asset at /assets/by-id/<id> instead of
+	// /assets/<name>, like GitHub's API, whose asset URLs end in an ID: a
+	// sibling signature URL cannot be derived from the asset's.
+	opaqueIDs bool
+
+	mu       sync.Mutex
+	paths    []string // request paths, in order
+	authzHdr []string // Authorization header of each request
+}
+
+func assetID(name string) string {
+	sum := sha256.Sum256([]byte(name))
+	return hex.EncodeToString(sum[:6])
+}
+
+// assetURL is the download URL advertised for the named asset.
+func (fr *fakeRelease) assetURL(name string) string {
+	if fr.opaqueIDs {
+		return fr.server.URL + "/assets/by-id/" + assetID(name)
+	}
+	return fr.server.URL + "/assets/" + name
+}
+
+// requested reports whether any request path contained substr.
+func (fr *fakeRelease) requested(substr string) bool {
+	fr.mu.Lock()
+	defer fr.mu.Unlock()
+	for _, p := range fr.paths {
+		if strings.Contains(p, substr) {
+			return true
+		}
+	}
+	return false
 }
 
 func newFakeRelease(t *testing.T, binName string, binContent []byte, corruptChecksum, omitChecksums bool) *fakeRelease {
@@ -235,16 +269,16 @@ func newFakeReleaseWithChecksumName(t *testing.T, binName string, binContent []b
 	})
 	mux.HandleFunc("/repos/owner/repo/releases/tags/v1.2.3", func(w http.ResponseWriter, r *http.Request) {
 		assets := []map[string]any{
-			{"name": assetName, "url": fr.server.URL + "/assets/" + assetName, "size": len(archive)},
+			{"name": assetName, "url": fr.assetURL(assetName), "size": len(archive)},
 		}
 		if !omitChecksums {
 			assets = append(assets, map[string]any{
-				"name": checksumName, "url": fr.server.URL + "/assets/" + checksumName, "size": len(checksums),
+				"name": checksumName, "url": fr.assetURL(checksumName), "size": len(checksums),
 			})
 		}
 		for name, body := range fr.extra {
 			assets = append(assets, map[string]any{
-				"name": name, "url": fr.server.URL + "/assets/" + name, "size": len(body),
+				"name": name, "url": fr.assetURL(name), "size": len(body),
 			})
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
@@ -255,9 +289,23 @@ func newFakeReleaseWithChecksumName(t *testing.T, binName string, binContent []b
 		_, _ = w.Write(archive)
 	})
 	mux.HandleFunc("/assets/"+checksumName, func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write(checksums)
+		_, _ = w.Write(fr.checksums)
 	})
 
+	mux.HandleFunc("/assets/by-id/", func(w http.ResponseWriter, r *http.Request) {
+		id := strings.TrimPrefix(r.URL.Path, "/assets/by-id/")
+		bodies := map[string][]byte{assetName: archive, checksumName: fr.checksums}
+		for name, body := range fr.extra {
+			bodies[name] = body
+		}
+		for name, body := range bodies {
+			if assetID(name) == id {
+				_, _ = w.Write(body)
+				return
+			}
+		}
+		http.NotFound(w, r)
+	})
 	mux.HandleFunc("/assets/", func(w http.ResponseWriter, r *http.Request) {
 		body, ok := fr.extra[strings.TrimPrefix(r.URL.Path, "/assets/")]
 		if !ok {
@@ -267,7 +315,13 @@ func newFakeReleaseWithChecksumName(t *testing.T, binName string, binContent []b
 		_, _ = w.Write(body)
 	})
 
-	fr.server = httptest.NewServer(mux)
+	fr.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fr.mu.Lock()
+		fr.paths = append(fr.paths, r.URL.Path)
+		fr.authzHdr = append(fr.authzHdr, r.Header.Get("Authorization"))
+		fr.mu.Unlock()
+		mux.ServeHTTP(w, r)
+	}))
 	t.Cleanup(fr.server.Close)
 	return fr
 }
@@ -804,5 +858,162 @@ func assertFetchErr(t *testing.T, rc io.ReadCloser, err, want error) {
 		t.Fatalf("Fetch succeeded, want error %v", want)
 	case want != errAny && !errors.Is(err, want):
 		t.Fatalf("Fetch error = %v, want errors.Is %v", err, want)
+	}
+}
+
+// --- error paths and wiring ---
+
+func TestSource_Latest_ErrorPropagates(t *testing.T) {
+	// No /releases/latest route is registered on this server.
+	srv := httptest.NewServer(http.NotFoundHandler())
+	t.Cleanup(srv.Close)
+	s := New("owner/repo", WithHTTPClient(&http.Client{Transport: redirectGitHubAPI(srv.URL)}))
+
+	if _, err := s.Latest(context.Background()); !errors.Is(err, ghrelease.ErrReleaseNotFound) {
+		t.Fatalf("Latest error = %v, want ErrReleaseNotFound", err)
+	}
+}
+
+func TestSource_Fetch_NilRelease(t *testing.T) {
+	if _, err := New("owner/repo").Fetch(context.Background(), nil); err == nil {
+		t.Fatal("expected an error for a nil Release")
+	}
+}
+
+func TestSource_Fetch_UnknownTag(t *testing.T) {
+	fr := newFakeRelease(t, testBinName(), []byte("payload"), false, false)
+	s := New("owner/repo", WithAppName("myapp"))
+	fr.newSourceClient(s)
+
+	_, err := s.Fetch(context.Background(), &binup.Release{Version: "v9.9.9"})
+	if !errors.Is(err, ghrelease.ErrReleaseNotFound) {
+		t.Fatalf("Fetch error = %v, want ErrReleaseNotFound", err)
+	}
+}
+
+func TestSource_Fetch_BinaryNotInArchive(t *testing.T) {
+	fr := newFakeRelease(t, "something-else", []byte("payload"), false, false)
+
+	_, err := fetchWith(t, fr)
+	if !errors.Is(err, ghrelease.ErrFileNotFound) {
+		t.Fatalf("Fetch error = %v, want ErrFileNotFound", err)
+	}
+}
+
+func TestSource_Fetch_ChecksumTemplateStrict(t *testing.T) {
+	fr := newFakeRelease(t, testBinName(), []byte("payload"), false, false)
+
+	_, err := fetchWith(t, fr, WithTemplateMode(TemplateStrict), WithChecksumAsset("{nope}.txt"))
+	if !errors.Is(err, ghrelease.ErrUnknownVariable) {
+		t.Fatalf("Fetch error = %v, want ErrUnknownVariable", err)
+	}
+}
+
+func TestSource_WithToken_SentToGitHub(t *testing.T) {
+	fr := newFakeRelease(t, testBinName(), []byte("payload"), false, false)
+	s := New("owner/repo", WithToken("s3cret"),
+		WithHTTPClient(&http.Client{Transport: redirectGitHubAPI(fr.server.URL)}))
+
+	if _, err := s.Latest(context.Background()); err != nil {
+		t.Fatalf("Latest: %v", err)
+	}
+	fr.mu.Lock()
+	defer fr.mu.Unlock()
+	if len(fr.authzHdr) == 0 || fr.authzHdr[0] != "Bearer s3cret" {
+		t.Fatalf("Authorization = %q, want %q", fr.authzHdr, "Bearer s3cret")
+	}
+}
+
+// A manifest that does not list the asset cannot vouch for it.
+func TestSource_Fetch_ManifestMissingEntry(t *testing.T) {
+	tests := []struct {
+		name    string
+		opts    func(v *fakeVerifier) []Option
+		wantErr bool
+	}{
+		{"default fails", nil, true},
+		{"WithoutChecksumVerification skips", func(*fakeVerifier) []Option { return []Option{WithoutChecksumVerification()} }, false},
+		// A signed manifest with no entry must not degrade to unverified.
+		{"fails closed under a manifest verifier", func(v *fakeVerifier) []Option {
+			return []Option{WithManifestVerifier(v), WithoutChecksumVerification()}
+		}, true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			fr := newFakeRelease(t, testBinName(), []byte("payload"), false, false)
+			fr.checksums = []byte(strings.Repeat("0", 64) + "  some-other-asset.tar.gz\n")
+			fr.extra["checksums.txt.fakesig"] = []byte("good")
+
+			var opts []Option
+			if tc.opts != nil {
+				opts = tc.opts(&fakeVerifier{suffix: ".fakesig"})
+			}
+			rc, err := fetchWith(t, fr, opts...)
+			if tc.wantErr {
+				assertFetchErr(t, rc, err, errAny)
+				return
+			}
+			assertFetchErr(t, rc, err, nil)
+		})
+	}
+}
+
+// partialVerifier accepts anything after reading only the first byte.
+type partialVerifier struct{ fakeVerifier }
+
+func (v *partialVerifier) Verify(_ context.Context, content io.Reader, _ []byte) error {
+	_, err := content.Read(make([]byte, 1))
+	return err
+}
+
+// A verifier that returns success without reading everything authenticated
+// nothing; it must be rejected, not trusted.
+func TestSource_Verifier_MustReadAllContent(t *testing.T) {
+	tests := []struct {
+		name string
+		sig  func(fr *fakeRelease) string
+		opt  func(v SignatureVerifier) Option
+	}{
+		{"manifest", func(*fakeRelease) string { return "checksums.txt.fakesig" }, WithManifestVerifier},
+		{"artifact", func(fr *fakeRelease) string { return fr.assetName + ".fakesig" }, WithArtifactVerifier},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			fr := newFakeRelease(t, testBinName(), []byte("payload"), false, false)
+			fr.extra[tc.sig(fr)] = []byte("good")
+
+			rc, err := fetchWith(t, fr, tc.opt(&partialVerifier{fakeVerifier{suffix: ".fakesig"}}))
+			assertFetchErr(t, rc, err, ErrSignatureInvalid)
+		})
+	}
+}
+
+// Verification is opt-in: without a verifier no signature is ever requested,
+// even when the release happens to publish one.
+func TestSource_NoVerifier_NeverFetchesSignature(t *testing.T) {
+	fr := newFakeRelease(t, testBinName(), []byte("payload"), false, false)
+	fr.extra["checksums.txt.fakesig"] = []byte("good")
+	fr.extra[fr.assetName+".fakesig"] = []byte("good")
+
+	rc, err := fetchWith(t, fr)
+	assertFetchErr(t, rc, err, nil)
+	if fr.requested(".fakesig") {
+		t.Fatal("a signature asset was downloaded although no verifier is configured")
+	}
+}
+
+// GitHub's API asset URLs end in an opaque ID, so a signature cannot be found
+// next to its asset by name; it must be looked up in the release's asset list.
+func TestSource_Verifiers_WithOpaqueAssetURLs(t *testing.T) {
+	fr := newFakeRelease(t, testBinName(), []byte("payload"), false, false)
+	fr.opaqueIDs = true
+	fr.extra["checksums.txt.m"] = []byte("good")
+	fr.extra[fr.assetName+".a"] = []byte("good")
+	mv, av := &fakeVerifier{suffix: ".m"}, &fakeVerifier{suffix: ".a"}
+
+	rc, err := fetchWith(t, fr, WithManifestVerifier(mv), WithArtifactVerifier(av))
+	assertFetchErr(t, rc, err, nil)
+	if mv.calls != 1 || av.calls != 1 {
+		t.Fatalf("verifier calls manifest=%d artifact=%d, want 1 and 1", mv.calls, av.calls)
 	}
 }
