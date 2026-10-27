@@ -95,7 +95,7 @@ every part of that is a `github.Option` because real release pipelines vary:
 | `WithBinaryName` | the file looked up inside the downloaded archive, keyed by `runtime.GOOS` |
 | `WithExtractFormat` | forces the archive format instead of relying on filename-suffix auto-detection |
 | `WithTagPrefix` | restricts release lookup to a tag prefix, for repos publishing multiple release lines (e.g. `cli/v1.2.3`) |
-| `WithPrereleases` | opt in to pre-releases (e.g. `v1.2.0-rc1`): `Latest` returns the highest semver release instead of the latest stable one; verification applies unchanged |
+| `WithPrereleases` | opt in to pre-releases (e.g. `v1.2.0-rc1`): `Latest` returns the highest semver release instead of the latest stable one; verification applies unchanged; `Release.Prerelease` reports whether the chosen release is one |
 | `WithToken` / `WithHTTPClient` | GitHub API token / a custom `*http.Client` for proxies, timeouts, custom transports |
 | `WithManifestVerifier` | authenticate the checksum manifest against a detached signature before any hash in it is trusted; see [Signature verification](#signature-verification) |
 | `WithArtifactVerifier` | authenticate the downloaded release asset itself against a detached signature; see [Signature verification](#signature-verification) |
